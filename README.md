@@ -12,6 +12,6 @@
 ```shell
 mkdir build
 cd  build
-cmake ..
+cmake .. -DUSE_ROCKCHIP=ON
 make -j8
 ```
