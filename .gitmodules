@@ -1,0 +1,3 @@
+[submodule "MMP-Core"]
+	path = MMP-Core
+	url = https://github.com/HR1025/MMP-Core.git
