@@ -3,11 +3,22 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "test_encoder",
+            "name": "test_h264_encoder",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/test_encoder",
-            "args": [],
+            "args": [
+                "-codec",
+                "h264",
+                "-height",
+                "480",
+                "-width",
+                "720",
+                "-gop",
+                "30",
+                "-o",
+                "./720x480.h264"
+            ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],

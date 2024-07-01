@@ -1,3 +1,4 @@
+#include <fstream>
 #include <Poco/Util/Application.h>
 #include <Poco/Util/HelpFormatter.h>
 
@@ -29,6 +30,9 @@ private:
     void HandleCodecType(const std::string& name, const std::string& value);
     void HandleRateControlMode(const std::string& name, const std::string& value);
     void HandleBps(const std::string& name, const std::string& value);
+    void HandleWidth(const std::string& name, const std::string& value);
+    void HandleHeight(const std::string& name, const std::string& value);
+    void HandleOutput(const std::string& name, const std::string& value);
     void HandleGop(const std::string& name, const std::string& value);
     void displayHelp();
 public:
@@ -36,6 +40,10 @@ public:
     uint32_t                 gop;
     Codec::RateControlMode   rcMode;
     uint64_t                 bps;
+    uint32_t                 width;
+    uint32_t                 height;
+    uint64_t                 loopTime;
+    std::string              outputFile;
 };
 
 App::App()
@@ -43,6 +51,10 @@ App::App()
     bps = 4 * 1024 * 1024;
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
+    width = 1920;
+    height = 1080;
+    loopTime = gop * 2;
+    outputFile = "./test_encoder.dmp";
 }
 
 void App::displayHelp()
@@ -110,6 +122,21 @@ void App::HandleBps(const std::string& name, const std::string& value)
     bps = std::stoi(value);
 }
 
+void App::HandleWidth(const std::string& name, const std::string& value)
+{
+    width = std::stol(value);
+}
+
+void App::HandleHeight(const std::string& name, const std::string& value)
+{
+    height = std::stol(value);
+}
+
+void App::HandleOutput(const std::string& name, const std::string& value)
+{
+    outputFile = value;
+}
+
 void App::HandleGop(const std::string& name, const std::string& value)
 {
     gop = std::stoi(value);
@@ -138,7 +165,7 @@ void App::defineOptions(OptionSet& options)
 {
     Application::defineOptions(options);
 
-    options.addOption(Option("help", "h", "帮助")
+    options.addOption(Option("help", "help", "帮助")
         .required(false)
         .repeatable(false)
         .callback(OptionCallback<App>(this, &App::HandleHelp))
@@ -168,7 +195,24 @@ void App::defineOptions(OptionSet& options)
         .argument("[rcmode]")
         .callback(OptionCallback<App>(this, &App::HandleRateControlMode))
     );
-
+    options.addOption(Option("width", "width", "宽, default 1920")
+        .required(false)
+        .repeatable(false)
+        .argument("[width]")
+        .callback(OptionCallback<App>(this, &App::HandleWidth))
+    );
+    options.addOption(Option("height", "height", "高, default 1080")
+        .required(false)
+        .repeatable(false)
+        .argument("[height]")
+        .callback(OptionCallback<App>(this, &App::HandleHeight))
+    );
+    options.addOption(Option("output", "o", "输出文件, default ./test_encoder.dmp")
+        .required(false)
+        .repeatable(false)
+        .argument("[filepath]")
+        .callback(OptionCallback<App>(this, &App::HandleOutput))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -196,17 +240,89 @@ int App::main(const ArgVec& args)
         return 0;
     }
     {
-        encoder->SetParameter(rcMode, Codec::kRateControlMode);
-        encoder->SetParameter(gop, Codec::kGop);
-        encoder->SetParameter(bps, Codec::kBps);
         MMP_LOG_INFO << "Encoder config";
         MMP_LOG_INFO << "-- codec name : " << encoderClassName;
         MMP_LOG_INFO << "-- rate control mode : " << rcMode;
         MMP_LOG_INFO << "-- gop : " << gop;
         MMP_LOG_INFO << "-- bps : " << bps; 
+        MMP_LOG_INFO << "-- width : " << width;
+        MMP_LOG_INFO << "-- height : " << height;
+        MMP_LOG_INFO << "-- output : " << outputFile;
+    }
+    {
+        encoder->SetParameter(rcMode, Codec::kRateControlMode);
+        encoder->SetParameter(gop, Codec::kGop);
+        encoder->SetParameter(bps, Codec::kBps);
     }
     encoder->Init();
     encoder->Start();
+
+    Codec::StreamFrame::ptr rgbFrame = std::make_shared<Codec::StreamFrame>(PixelsInfo(width, height, 8, PixelFormat::RGB888));
+    Codec::StreamFrame::ptr yuvFrame = std::make_shared<Codec::StreamFrame>(PixelsInfo(width, height, 8, PixelFormat::NV12));
+    // Init RGB
+    {
+        uint8_t* rgbImage = (uint8_t*)rgbFrame->GetData(0);
+        uint32_t offset = 0;
+        for (uint32_t i=0; i<height; i++)
+        {
+            for (uint32_t i=0; i<height; i++)
+            {
+                rgbImage[offset++] = 0x66;
+                rgbImage[offset++] = 0xCC;
+                rgbImage[offset++] = 0xFF;
+            }
+        }
+    }
+    // RGB TO NV12
+    {
+        uint8_t* rgbImage = (uint8_t*)rgbFrame->GetData(0);
+        uint8_t* yuvImage = (uint8_t*)yuvFrame->GetData(0);
+        uint64_t imageSize = width * height;
+        uint64_t rgbIndex = 0;
+        uint64_t yIndex = 0;
+        uint64_t uvIndex = imageSize;
+        for (uint64_t y = 0; y < height; y++) 
+        {
+            for (uint64_t x = 0; x < width; x++) 
+            {
+                uint8_t R = rgbImage[rgbIndex++];
+                uint8_t G = rgbImage[rgbIndex++];
+                uint8_t B = rgbImage[rgbIndex++];
+#if 1 // BT709
+                uint8_t Y = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+                uint8_t U = -0.1146 * R - 0.3854 * G + 0.5 * B + 128;
+                uint8_t V = 0.5 * R - 0.4542 * G - 0.0458 * B + 128;
+#else // BT601
+                uint8_t Y = 0.299 * R + 0.587 * G + 0.114 * B;
+                uint8_t U = -0.169 * R - 0.331 * G + 0.5 * B + 128;
+                uint8_t V = 0.5 * R - 0.419 * G - 0.081 * B + 128;
+#endif
+                yuvImage[yIndex++] = Y;
+                if (y % 2 == 0 && x % 2 == 0) 
+                {
+
+                    yuvImage[uvIndex++] = U;
+                    yuvImage[uvIndex++] = V;
+                }
+            }
+        }
+    }
+
+    std::ofstream ofs(outputFile);
+    for (uint64_t i=0; i<loopTime; i++)
+    {
+        encoder->Push(yuvFrame);
+        while (encoder->CanPop())
+        {
+            AbstractPack::ptr pack;
+            if (encoder->Pop(pack))
+            {
+                ofs.write((char*)pack->GetData(0), pack->GetSize());
+            } 
+        }
+    }
+    ofs.flush();
+    ofs.close();
 
     encoder->Stop();
     encoder->Uninit();
