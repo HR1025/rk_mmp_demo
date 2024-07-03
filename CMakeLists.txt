@@ -8,3 +8,7 @@ add_subdirectory(Display)
 
 add_executable(test_encoder ${CMAKE_CURRENT_SOURCE_DIR}/test_encoder.cpp)
 target_link_libraries(test_encoder ${Test_LIBS})
+
+add_executable(test_decoder ${CMAKE_CURRENT_SOURCE_DIR}/test_decoder.cpp)
+target_link_libraries(test_decoder ${Test_LIBS} Display)
+

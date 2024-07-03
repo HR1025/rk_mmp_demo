@@ -15,7 +15,7 @@ if (WAYLAND_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/Wayland/DisplayWayland.h
         ${CMAKE_CURRENT_SOURCE_DIR}/Wayland/DisplayWayland.cpp
     )
-
+    list(APPEND Display_LIBS ${WAYLAND_LIBRARIES})
 else()
     set(SAMPLE_WITH_WAYLAND OFF)
 endif()

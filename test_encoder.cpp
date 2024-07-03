@@ -1,4 +1,5 @@
 #include <fstream>
+#include <Poco/Stopwatch.h>
 #include <Poco/Util/Application.h>
 #include <Poco/Util/HelpFormatter.h>
 
@@ -36,7 +37,7 @@ private:
     void HandleGop(const std::string& name, const std::string& value);
     void displayHelp();
 public:
-    std::string              encoderClassName;
+    std::string              decoderClassName;
     uint32_t                 gop;
     Codec::RateControlMode   rcMode;
     uint64_t                 bps;
@@ -88,7 +89,7 @@ void App::HandleCodecType(const std::string& name, const std::string& value)
     };
     if (kLookup.count(value))
     {
-        encoderClassName = kLookup[value];
+        decoderClassName = kLookup[value];
     }
     else
     {
@@ -233,7 +234,7 @@ void App::defineProperty(const std::string& def)
 
 int App::main(const ArgVec& args)
 {
-    Codec::AbstractEncoder::ptr encoder = Codec::EncoderFactory::DefaultFactory().CreateEncoder(encoderClassName);
+    Codec::AbstractEncoder::ptr encoder = Codec::EncoderFactory::DefaultFactory().CreateEncoder(decoderClassName);
     if (!encoder)
     {
         MMP_LOG_INFO << "Rebuild with -DUSE_ROCKCHIP=ON, see README for detail.";
@@ -241,7 +242,7 @@ int App::main(const ArgVec& args)
     }
     {
         MMP_LOG_INFO << "Encoder config";
-        MMP_LOG_INFO << "-- codec name : " << encoderClassName;
+        MMP_LOG_INFO << "-- codec name : " << decoderClassName;
         MMP_LOG_INFO << "-- rate control mode : " << rcMode;
         MMP_LOG_INFO << "-- gop : " << gop;
         MMP_LOG_INFO << "-- bps : " << bps; 
@@ -311,13 +312,18 @@ int App::main(const ArgVec& args)
     std::ofstream ofs(outputFile);
     for (uint64_t i=0; i<loopTime; i++)
     {
+        Poco::Stopwatch sw;
+        sw.start();
         encoder->Push(yuvFrame);
+        MMP_LOG_INFO << "Push , cur is: " << i << ", cost time is: " << sw.elapsed() / 1000 << " ms";
         while (encoder->CanPop())
         {
             AbstractPack::ptr pack;
             if (encoder->Pop(pack))
             {
-                ofs.write((char*)pack->GetData(0), pack->GetSize());
+                char* address = (char*)pack->GetData(0);
+                size_t size = pack->GetSize();
+                ofs.write(address, size);
             } 
         }
     }

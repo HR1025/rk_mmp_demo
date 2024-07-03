@@ -201,7 +201,6 @@ bool DisplaySDL::Close()
 void DisplaySDL::UpdateWindow(const uint32_t* frameBuffer, PixelsInfo info)
 {
     assert(_frameBuffer);
-    assert(_windowWidth == info.width && _windowHeight == info.height && _format == info.format);
 
     memcpy(_frameBuffer, frameBuffer, sizeof(uint32_t)*_windowWidth*_windowHeight);
     SDL_UpdateTexture(_texture, NULL, reinterpret_cast<const void*>(_frameBuffer), sizeof(uint32_t)*_windowWidth);

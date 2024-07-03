@@ -15,6 +15,7 @@ if (SDL2_FOUND)
         ${CMAKE_CURRENT_SOURCE_DIR}/SDL/DisplaySDL.h
         ${CMAKE_CURRENT_SOURCE_DIR}/SDL/DisplaySDL.cpp
     )
+    list(APPEND Display_LIBS ${SDL2_LIBRARIES})
 else()
     set(SAMPLE_WITH_SDL OFF)
 endif()
