@@ -10,7 +10,7 @@
 
 #include <string>
 
-#include "Sample/Common/Display/AbstractDisplay.h"
+#include "AbstractDisplay.h"
 
 // forward declaration
 struct wl_shm;

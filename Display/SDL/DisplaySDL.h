@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <string>
 
-#include "Sample/Common/Display/AbstractDisplay.h"
+#include "AbstractDisplay.h"
 
 // forward declare
 struct SDL_Window;

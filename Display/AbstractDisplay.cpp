@@ -3,10 +3,10 @@
 #include <vector>
 
 #ifdef SAMPLE_WITH_SDL
-    #include "Sample/Common/Display/SDL/DisplaySDL.h"
+    #include "SDL/DisplaySDL.h"
 #endif /* SAMPLE_WITH_SDL */
 #ifdef SAMPLE_WITH_WAYLAND
-    #include "Sample/Common/Display/Wayland/DisplayWayland.h"
+    #include "Wayland/DisplayWayland.h"
 #endif /* SAMPLE_WITH_WAYLAND */
 
 namespace Mmp
