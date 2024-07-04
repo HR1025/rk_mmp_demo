@@ -22,7 +22,7 @@ list(APPEND Display_INCS
 
 add_library(Display STATIC ${Display_SRCS})
 target_include_directories(Display PUBLIC ${Display_INCS})
-target_link_libraries(Display PRIVATE Poco::Foundation Mmp::Common ${Display_LIBS}) 
+target_link_libraries(Display PUBLIC Poco::Foundation Mmp::Common ${Display_LIBS}) 
 
 if (SAMPLE_WITH_SDL)
     target_compile_definitions(Display PRIVATE SAMPLE_WITH_SDL)

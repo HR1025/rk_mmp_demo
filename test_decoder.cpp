@@ -18,6 +18,9 @@ using namespace Poco::Util;
 
 constexpr uint32_t kBufSize = 1024 * 1024;
 
+/**
+ * @todo 好像挺烧 CPU, 用 `mmap` 并且优化 NAL UINT 的查找方式可能好一些
+ */
 class RkCacheFileByteReader
 {
 public:
@@ -189,16 +192,19 @@ private:
     void HandleCodecType(const std::string& name, const std::string& value);
     void HandleInput(const std::string& name, const std::string& value);
     void HandleShow(const std::string& name, const std::string& value);
+    void HandleFps(const std::string& name, const std::string& value);
     void displayHelp();
 public:
     std::string              decoderClassName;
     std::string              inputFile;
     bool                     show;
+    uint64_t                 fps;
 };
 
 App::App()
 {
     show = true;
+    fps = 30;
 }
 
 void App::displayHelp()
@@ -251,6 +257,11 @@ void App::HandleShow(const std::string& name, const std::string& value)
     {
         show = false;
     }
+}
+
+void App::HandleFps(const std::string& name, const std::string& value)
+{
+    fps = std::stoi(value);
 }
 
 void App::HandleInput(const std::string& name, const std::string& value)
@@ -306,6 +317,12 @@ void App::defineOptions(OptionSet& options)
         .argument("[show]")
         .callback(OptionCallback<App>(this, &App::HandleShow))
     );
+    options.addOption(Option("fps", "fps", "显示帧率, default 30")
+        .required(false)
+        .repeatable(false)
+        .argument("[num]")
+        .callback(OptionCallback<App>(this, &App::HandleFps))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -332,7 +349,9 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "Decoder config";
         MMP_LOG_INFO << "-- codec name : " << decoderClassName;
         MMP_LOG_INFO << "-- input :  " << inputFile;
-        MMP_LOG_INFO << "-- display : " << show;
+        MMP_LOG_INFO << "-- display : " << (show ? "true" : "false");
+        MMP_LOG_INFO << "-- fps : " << fps;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
 
@@ -354,44 +373,42 @@ int App::main(const ArgVec& args)
     }
     std::shared_ptr<RkCacheFileByteReader> byteReader = std::make_shared<RkCacheFileByteReader>(inputFile);
     NormalPack::ptr pack = nullptr;
-    uint8_t* frameBuffer = nullptr;
     /***************************************** 渲染线程(Begin) ****************************************/
     std::atomic<bool> running(true);
+    std::atomic<bool> sync(false);
     Promise<void>::ptr displayTask = std::make_shared<Promise<void>>([&]()
     {
+        uint64_t intervalMs = 1000 / fps;
+        Poco::Stopwatch sw;
+        sw.start();
+        bool first = true;
         while (running)
         {
             AbstractFrame::ptr frame;
             if (decoder->Pop(frame))
             {
+                MMP_LOG_INFO << "AbstractDisplay Pop";
                 Codec::StreamFrame::ptr streamFrame = std::dynamic_pointer_cast<Codec::StreamFrame>(frame);
-                if (display && !frameBuffer)
+                if (display && first)
                 {
-                    auto info = streamFrame->info;
-                    info.format = PixelFormat::RGBA8888;
-                    frameBuffer = new uint8_t[(size_t)(info.width * info.height * BytePerPixel(info.format))];
-                    display->Open(info);
+                    display->Open(streamFrame->info);
+                    first = false;
                 }
                 if (display)
                 {
+                    display->UpdateWindow((const uint32_t*)streamFrame->GetData(0));
+                    if (intervalMs > sw.elapsed() / 1000)
                     {
-                        auto info = streamFrame->info;
-                        // Hint : 简单拷贝灰度图, 不做 NV12 到 RGBA
-                        uint8_t* y = (uint8_t*)streamFrame->GetData(0);
-                        uint8_t* rgba = frameBuffer;
-                        for (uint32_t i=0; i<info.width * info.height; i++)
-                        {
-                            rgba[0] = *y;
-                            rgba[1] = *y;
-                            rgba[2] = *y;
-                            rgba[3] = *y;
-                            y++;
-                            rgba += 4;
-                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs - sw.elapsed() / 1000));
                     }
-                    display->UpdateWindow((const uint32_t*)frameBuffer);
+                    else
+                    {
+                        MMP_LOG_WARN << "Process too slow!!!";
+                    }                    
+                    sw.restart();
                 }
             }
+            sync = true;
         } 
     });
     ThreadPool::ThreadPoolSingleton()->Commit(displayTask);
@@ -402,6 +419,7 @@ int App::main(const ArgVec& args)
         pack = byteReader->GetNalUint();
         if (pack)
         {
+            MMP_LOG_INFO << "AbstractDisplay Push";
             decoder->Push(pack);
         }
     } while (pack);
@@ -411,6 +429,12 @@ int App::main(const ArgVec& args)
     {
         display->Close();
         display->UnInit();
+    }
+
+    running = false;
+    while (!sync)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     decoder->Stop();

@@ -18,7 +18,6 @@ DisplaySDL::DisplaySDL()
     _window         = nullptr;
     _render         = nullptr;
     _texture        = nullptr;
-    _frameBuffer    = nullptr;
     _title          = "MMP";
     _selfInit       = true;
 }
@@ -116,6 +115,10 @@ bool DisplaySDL::Open(PixelsInfo info)
     {
         format = SDL_PIXELFORMAT_ABGR8888;
     }
+    else if (info.format == PixelFormat::NV12)
+    {
+        format = SDL_PIXELFORMAT_NV12;
+    }
     else
     {
         DISPLAY_LOG_ERROR << "Unsupport pixel format, pixel format is: " << _format;
@@ -155,14 +158,6 @@ bool DisplaySDL::Open(PixelsInfo info)
     }
     SDL_SetTextureBlendMode(_texture, SDL_BLENDMODE_BLEND); // 支持透明度
 
-    _frameBuffer = new uint32_t[_windowWidth*_windowHeight];
-    // 初始化窗口 (黑屏)
-    memset(_frameBuffer, 0x00, sizeof(uint32_t)*_windowWidth*_windowHeight);
-
-    SDL_UpdateTexture(_texture, NULL, reinterpret_cast<const void*>(_frameBuffer), sizeof(uint32_t)*_windowWidth);
-    SDL_RenderCopy(_render, _texture, NULL, NULL);
-    SDL_RenderPresent(_render);
-
     DISPLAY_LOG_INFO << "Open SDL window successfully";
 
     return true;
@@ -171,11 +166,6 @@ bool DisplaySDL::Open(PixelsInfo info)
 bool DisplaySDL::Close()
 {
     DISPLAY_LOG_INFO << "Try to close SDL window";
-    if (_frameBuffer)
-    {
-        delete[] _frameBuffer;
-        _frameBuffer = nullptr;
-    }
     if (_texture)
     {
         SDL_DestroyTexture(_texture);
@@ -200,10 +190,31 @@ bool DisplaySDL::Close()
 
 void DisplaySDL::UpdateWindow(const uint32_t* frameBuffer, PixelsInfo info)
 {
-    assert(_frameBuffer);
-
-    memcpy(_frameBuffer, frameBuffer, sizeof(uint32_t)*_windowWidth*_windowHeight);
-    SDL_UpdateTexture(_texture, NULL, reinterpret_cast<const void*>(_frameBuffer), sizeof(uint32_t)*_windowWidth);
+    switch (info.format)
+    {
+        case PixelFormat::RGBA8888:
+        case PixelFormat::BGRA8888:
+        {
+            SDL_UpdateTexture(_texture, NULL, reinterpret_cast<const void*>(frameBuffer), sizeof(uint32_t)*_windowWidth);
+            break;
+        }
+        case PixelFormat::NV12:
+        {
+            SDL_Rect rect;
+            {
+                rect.x = 0;
+                rect.y = 0;
+                rect.w = info.width;
+                rect.h = info.height;
+            }
+            SDL_UpdateNVTexture(_texture, &rect, (uint8_t*)frameBuffer, info.width, (uint8_t*)frameBuffer + info.width * info.height, info.width);
+            break;
+        }
+        default:
+        {
+            return;
+        }
+    }
     SDL_RenderCopy(_render, _texture, NULL, NULL);
     SDL_RenderPresent(_render);
 }

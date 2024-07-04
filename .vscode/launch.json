@@ -31,6 +31,34 @@
                     "ignoreFailures": true
                 }
             ]
+        },
+        {
+            "name": "test_h264_decoder",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/test_decoder",
+            "args": [
+                "-codec",
+                "h264",
+                "-i",
+                "./1.h264",
+                "-display",
+                "true",
+                "-fps",
+                "30"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "为 gdb 启用整齐打印",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
         }
     ]
 }
