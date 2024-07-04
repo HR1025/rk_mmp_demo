@@ -59,6 +59,38 @@
                     "ignoreFailures": true
                 }
             ]
+        },
+        {
+            "name": "test_h264_transcode",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/test_transcode",
+            "args": [
+                "-src_codec",
+                "h264",
+                "-dst_codec",
+                "h264",
+                "-i",
+                "./1.h264",
+                "-o",
+                "./2.h264",
+                "-gop",
+                "25",
+                "-rcmode",
+                "avbr"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "为 gdb 启用整齐打印",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
         }
     ]
 }

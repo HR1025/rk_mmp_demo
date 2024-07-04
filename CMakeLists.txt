@@ -12,3 +12,5 @@ target_link_libraries(test_encoder ${Test_LIBS})
 add_executable(test_decoder ${CMAKE_CURRENT_SOURCE_DIR}/test_decoder.cpp)
 target_link_libraries(test_decoder ${Test_LIBS} Display)
 
+add_executable(test_transcode ${CMAKE_CURRENT_SOURCE_DIR}/test_transcode.cpp)
+target_link_libraries(test_transcode ${Test_LIBS})
