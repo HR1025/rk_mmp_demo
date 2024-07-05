@@ -368,7 +368,7 @@ void App::defineOptions(OptionSet& options)
         .required(true)
         .repeatable(false)
         .argument("[filepath]")
-        .callback(OptionCallback<App>(this, &App::HandleInput))
+        .callback(OptionCallback<App>(this, &App::HandleOutput))
     );
     options.addOption(Option("group_of_picture", "gop", "I 帧间隔帧数, default 60")
         .required(false)
@@ -418,6 +418,95 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- rate control mode : " << rcMode;
         MMP_LOG_INFO << "-- gop is: " << gop;
     }
+    std::atomic<bool> sync(false);
+    std::atomic<bool> running(true); 
+
+    Codec::AbstractDecoder::ptr decoder = Codec::DecoderFactory::DefaultFactory().CreateDecoder(decoderClassName);
+    Codec::AbstractEncoder::ptr encoder = Codec::EncoderFactory::DefaultFactory().CreateEncoder(encoderClassName);
+    if (!decoder || !encoder)
+    {
+        MMP_LOG_INFO << "Rebuild with -DUSE_ROCKCHIP=ON, see README for detail.";
+        return 0;
+    }
+    decoder->Init();
+    decoder->Start();
+    encoder->SetParameter(rcMode, Codec::kRateControlMode);
+    encoder->SetParameter(bps, Codec::kBps);
+    encoder->SetParameter(gop, Codec::kGop);
+    encoder->Init();
+    encoder->Start();
+
+    //
+    // 三级经典流水线:
+    //
+    // Input File Read -> VDEC PUSH
+    //                    VDEC POP -> VENC PUSH
+    //                                VENC POP -> Output File Write
+    //
+
+    /*********************************** 编码线程(Begin) ******************************/
+    Promise<void>::ptr encoderTask = std::make_shared<Promise<void>>([&]()
+    {
+        MMP_LOG_INFO << "Encoder Start";
+        while (running || decoder->CanPop())
+        {
+            AbstractFrame::ptr frame;
+            if (decoder->Pop(frame))
+            {
+                encoder->Push(frame);
+            }
+        }
+        MMP_LOG_INFO << "Encoder Stop";
+    });
+    ThreadPool::ThreadPoolSingleton()->Commit(encoderTask);
+    /*********************************** 编码线程(End) ******************************/
+    /*********************************** 文件写入线程(Begin) ******************************/
+    Promise<void>::ptr outFileTask = std::make_shared<Promise<void>>([&]()
+    {
+        MMP_LOG_INFO << "Dump Start"; 
+        std::ofstream ofs(outputFile);
+        while (running || encoder->CanPop())
+        {
+            AbstractPack::ptr pack;
+            if (encoder->Pop(pack))
+            {
+                ofs.write((char*)pack->GetData(0), pack->GetSize());
+                MMP_LOG_INFO << "Write address is: " << pack->GetData(0) << " , size is: " << pack->GetSize();
+            }
+        }
+        ofs.flush();
+        ofs.close();
+        sync = true;
+        MMP_LOG_INFO << "Dump Stop"; 
+    });
+    ThreadPool::ThreadPoolSingleton()->Commit(outFileTask);
+    /*********************************** 文件写入线程(Begin) ******************************/
+    /*********************************** 解码线程(Begin) ******************************/
+    std::shared_ptr<RkCacheFileByteReader> byteReader = std::make_shared<RkCacheFileByteReader>(inputFile);
+    NormalPack::ptr pack = nullptr;
+    MMP_LOG_INFO << "Decode Start";
+    do
+    {
+        pack = byteReader->GetNalUint();
+        if (pack)
+        {
+            decoder->Push(pack);
+        }
+    } while (pack);
+    MMP_LOG_INFO << "Decode End";
+    /*********************************** 解码线程(End) ******************************/
+
+    running = false;
+    while (!sync)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    decoder->Stop();
+    decoder->Uninit();
+    encoder->Stop();
+    encoder->Uninit();
+
     return 0;
 }
 
