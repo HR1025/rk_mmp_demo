@@ -215,7 +215,7 @@ void App::displayHelp()
     helpFormatter.setWidth(1024);
     helpFormatter.setCommand(commandName());
     helpFormatter.setUsage("OPTIONS");
-    helpFormatter.setHeader("Simple program to test rockchip encoder using MMP-Core.");
+    helpFormatter.setHeader("Simple program to test rockchip decoder using MMP-Core.");
     helpFormatter.format(ss);
     MMP_LOG_INFO << ss.str();
     exit(0);
@@ -234,7 +234,7 @@ void App::HandleCodecType(const std::string& name, const std::string& value)
         {"hevc", ""}, // todo
         {"vp8", ""}, // todo
         {"vp9", ""}, // todo
-        {"av1", ""} // av1
+        {"av1", ""} // todo
     };
     if (kLookup.count(value))
     {
@@ -373,6 +373,12 @@ int App::main(const ArgVec& args)
     }
     std::shared_ptr<RkCacheFileByteReader> byteReader = std::make_shared<RkCacheFileByteReader>(inputFile);
     NormalPack::ptr pack = nullptr;
+
+    //
+    // Input File Read -> VDEC PUSH
+    //                    VDEC POP -> Display Show
+    //
+
     /***************************************** 渲染线程(Begin) ****************************************/
     std::atomic<bool> running(true);
     std::atomic<bool> sync(false);
