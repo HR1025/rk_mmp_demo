@@ -5,6 +5,7 @@
 
 #include "Common/AbstractLogger.h"
 #include "Common/LogMessage.h"
+#include "Common/DmaHeapAllocateMethod.h"
 #include "Codec/CodecConfig.h"
 #include "Codec/CodecFactory.h"
 
@@ -35,6 +36,7 @@ private:
     void HandleHeight(const std::string& name, const std::string& value);
     void HandleOutput(const std::string& name, const std::string& value);
     void HandleGop(const std::string& name, const std::string& value);
+    void HandleMemType(const std::string& name, const std::string& value);
     void displayHelp();
 public:
     std::string              decoderClassName;
@@ -45,16 +47,18 @@ public:
     uint32_t                 height;
     uint64_t                 loopTime;
     std::string              outputFile;
+    uint32_t                 memtype;
 };
 
 App::App()
 {
+    memtype = 0;
     bps = 4 * 1024 * 1024;
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
     width = 1920;
     height = 1080;
-    loopTime = gop * 2;
+    loopTime = gop * 20;
     outputFile = "./test_encoder.dmp";
 }
 
@@ -143,6 +147,11 @@ void App::HandleGop(const std::string& name, const std::string& value)
     gop = std::stoi(value);
 }
 
+void App::HandleMemType(const std::string& name, const std::string& value)
+{
+    memtype = std::stoi(value);
+}
+
 void App::initialize(Application& self)
 {
     loadConfiguration(); 
@@ -214,6 +223,12 @@ void App::defineOptions(OptionSet& options)
         .argument("[filepath]")
         .callback(OptionCallback<App>(this, &App::HandleOutput))
     );
+    options.addOption(Option("memtype", "memtype", "内存类型, 0 - normal, 1 - dma, default 0")
+        .required(false)
+        .repeatable(false)
+        .argument("[type]")
+        .callback(OptionCallback<App>(this, &App::HandleMemType))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -249,6 +264,7 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- width : " << width;
         MMP_LOG_INFO << "-- height : " << height;
         MMP_LOG_INFO << "-- output : " << outputFile;
+        MMP_LOG_INFO << "-- memtype : " << memtype;
     }
     {
         encoder->SetParameter(rcMode, Codec::kRateControlMode);
@@ -259,19 +275,25 @@ int App::main(const ArgVec& args)
     encoder->Start();
 
     Codec::StreamFrame::ptr rgbFrame = std::make_shared<Codec::StreamFrame>(PixelsInfo(width, height, 8, PixelFormat::RGB888));
-    Codec::StreamFrame::ptr yuvFrame = std::make_shared<Codec::StreamFrame>(PixelsInfo(width, height, 8, PixelFormat::NV12));
+    AbstractAllocateMethod::ptr alloc;
+    if (memtype == 1)
+    {
+        //
+        // Hint : DMA-HEAP 是一种特殊的内存分配方式
+        // See also : MMP-Core/Common/DmaHeapAllocateMethod.cpp
+        //
+        alloc = std::make_shared<DmaHeapAllocateMethod>();
+    }
+    Codec::StreamFrame::ptr yuvFrame = std::make_shared<Codec::StreamFrame>(PixelsInfo(width, height, 8, PixelFormat::NV12), alloc);
     // Init RGB
     {
         uint8_t* rgbImage = (uint8_t*)rgbFrame->GetData(0);
         uint32_t offset = 0;
-        for (uint32_t i=0; i<height; i++)
+        for (uint32_t i=0; i<width*height; i++)
         {
-            for (uint32_t i=0; i<height; i++)
-            {
-                rgbImage[offset++] = 0x66;
-                rgbImage[offset++] = 0xCC;
-                rgbImage[offset++] = 0xFF;
-            }
+            rgbImage[offset++] = 0x66;
+            rgbImage[offset++] = 0xCC;
+            rgbImage[offset++] = 0xFF;
         }
     }
     // RGB TO NV12
@@ -315,15 +337,14 @@ int App::main(const ArgVec& args)
         Poco::Stopwatch sw;
         sw.start();
         encoder->Push(yuvFrame);
-        MMP_LOG_INFO << "Push , cur is: " << i << ", cost time is: " << sw.elapsed() / 1000 << " ms";
+        // MMP_LOG_INFO << "Push , cur is: " << i << ", cost time is: " << sw.elapsed() / 1000 << " ms";
         while (encoder->CanPop())
         {
             AbstractPack::ptr pack;
             if (encoder->Pop(pack))
             {
-                char* address = (char*)pack->GetData(0);
-                size_t size = pack->GetSize();
-                ofs.write(address, size);
+                ofs.write((char*)pack->GetData(0), pack->GetSize());
+                // MMP_LOG_INFO << "Pop, addresss is: " << pack->GetData(0) << ", size is: " << pack->GetSize();
             } 
         }
     }

@@ -1,5 +1,4 @@
 {
-
     "version": "0.2.0",
     "configurations": [
         {
@@ -11,17 +10,24 @@
                 "-codec",
                 "h264",
                 "-height",
-                "480",
+                "1080",
                 "-width",
-                "720",
+                "1920",
                 "-gop",
                 "30",
+                "-memtype",
+                "1",
                 "-o",
-                "./720x480.h264"
+                "./output.h264"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [],
+            "environment": [
+                {
+                    "name": "mpp_buffer_debug",
+                    "value": "15"
+                }
+            ],
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
