@@ -8,6 +8,7 @@
 #include "Common/AbstractLogger.h"
 #include "Common/LogMessage.h"
 #include "Common/ThreadPool.h"
+#include "Common/DmaHeapAllocateMethod.h"
 #include "GPU/GL/GLDrawContex.h"
 #include "GPU/Windows/AbstractWindows.h"
 #include "GPU/Windows/WindowFactory.h"
@@ -386,9 +387,9 @@ void App::HandleOutput(const std::string& name, const std::string& value)
 void App::initialize(Application& self)
 {
     loadConfiguration(); 
-    ThreadPool::ThreadPoolSingleton()->Init();
     Application::initialize(self);
     Codec::CodecConfig::Instance()->Init();
+    // AbstractLogger::LoggerSingleton()->SetThreshold(AbstractLogger::Level::L_TRACE);
     AbstractLogger::LoggerSingleton()->Enable(AbstractLogger::Direction::CONSLOE);
     {
         _renderThread = std::thread([this]() -> void
@@ -399,6 +400,7 @@ void App::initialize(Application& self)
                 _window->Open();
                 _window->BindRenderThread(true);
                 _draw = GLDrawContex::Instance();
+                _draw->SetWindows(_window);
                 _gpuInited = true;
                 _draw->ThreadStart();
                 while (true)
@@ -433,7 +435,6 @@ void App::uninitialize()
 {
     Codec::CodecConfig::Instance()->Uninit();
     Application::uninitialize();
-    ThreadPool::ThreadPoolSingleton()->Uninit();
     {
         _draw->ThreadStop();
         _renderThread.join();
@@ -573,6 +574,12 @@ int App::main(const ArgVec& args)
     // 流水线最大长度为 5, 整体使用线程数量 12(4 + 4 + 1 + 1 + 1 + 1)条；
     // 流控由 COMPOSITOR 控制,按照固定 fps 合成, 其他环节由 mtx 和 cond 形成正向或反向压制
     // (实际上如果场景更为复杂, 最好是由统一线程池管理调度, 不过单独起线程便于理解逻辑行为)
+    // 
+    // 其他:
+    // 本示例还是挺有意思的,展示了一种通过 DMA BUF 实现无拷贝的画面合成方式,
+    // 数据链路为 VDEC -> GPU -> VENC
+    // 而非 VDEC -> CPU -> GPU -> CPU -> VENC
+    // 同时依托于 ARM MALI 的 GPU 涉及, 可以全链路使用 NV12 进行传输, 避免 YUV 与 RGB 的互转
     // 
 
     /*********************************** 解码线程(Begin) ******************************/
@@ -757,10 +764,59 @@ int App::main(const ArgVec& args)
             //                     -> Item2
             //                     -> Item3
             //
+            bool useRgb = true; // for early debug
             {
                 compositor = Gpu::AbstractSceneCompositor::Create();
+                {
+                    {
+                        Gpu::SceneCompositorParam param;
+                        param.width = compositorWidth;
+                        param.height = compositorHeight;
+                        param.bufSize = 3;
+                        if (useRgb)
+                        {
+                            param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL;
+                        }
+                        else
+                        {
+                            param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
+                        }
+                        compositor->SetParam(param);
+                    }
+                }
                 layer = Gpu::AbstractSceneLayer::Create();
-                compositor->AddSceneLayer("Layer", layer);
+                {
+                    {
+                        Gpu::SceneLayerParam param;
+                        param.height = compositorWidth;
+                        param.width = compositorHeight;
+                        layer->SetParam(param);
+                    }
+                    {
+                        PixelsInfo info;
+                        info.width = compositorWidth;
+                        info.height = compositorHeight;
+                        if (useRgb)
+                        {
+                            info.format = PixelFormat::RGB888;
+                        }
+                        else
+                        {
+                            info.format = PixelFormat::NV12;
+                        }
+                        if (useRgb)
+                        {
+                            Texture::ptr texture = Gpu::Create2DTextures(_draw, info, "", GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL)[0];
+                            layer->UpdateCanvas(texture);
+                        }
+                        else
+                        {
+                            Texture::ptr texture = Gpu::Create2DTextures(_draw, info, "", GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV)[0];
+                            layer->UpdateCanvas(texture);
+                        }
+                    }
+                    compositor->AddSceneLayer("Layer", layer);
+                }
                 for (uint32_t i=0; i<decoderNum; i++)
                 {
                     items[i] = Gpu::AbstractSceneItem::Create();
@@ -829,14 +885,35 @@ int App::main(const ArgVec& args)
                 }
                 // 合成
                 {
+                    // MMP_LOG_INFO << "Compositor Begin";
                     for (uint32_t i=0; i<decoderNum; i++)
                     {
-                        Texture::ptr texture = Gpu::Create2DTextures(GLDrawContex::Instance(), decodersFrames[i]->info, "", GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV)[0];
+                        Texture::ptr texture = Gpu::Create2DTextures(_draw, decodersFrames[i]->info, "", GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV)[0];
+                        {
+                            TextureDesc desc;
+                            AbstractPicture::ptr picFrame = std::make_shared<NormalPicture>(decodersFrames[i]->info, decodersFrames[i]->GetAllocateMethod());
+                            Gpu::Update2DTextures(_draw, {texture}, picFrame);
+                        }
                         items[i]->UpdateImage(texture);
                     }
                     compositor->Draw();
-                    // TODO
-                    compositorFrame = decodersFrames[0];
+                    {
+                        DmaHeapAllocateMethod::ptr alloc = std::dynamic_pointer_cast<DmaHeapAllocateMethod>(compositor->GetFrameBuffer()->GetAllocateMethod());
+                        PixelsInfo info;
+                        info.width = compositorWidth;
+                        info.height = compositorHeight;
+                        if (useRgb)
+                        {
+                            info.format = PixelFormat::RGBA8888;
+                        }
+                        else
+                        {
+                            info.format = PixelFormat::NV12;
+                        }
+                        Codec::StreamFrame::ptr frame = std::make_shared<Codec::StreamFrame>(info, alloc);
+                        compositorFrame = frame;
+                    }
+                    // MMP_LOG_INFO << "Compositor End";
                 }
                 // 正向压制
                 {
@@ -847,6 +924,7 @@ int App::main(const ArgVec& args)
                             _curDisplayFrame = compositorFrame;
                             _displayCond.notify_one();
                         }
+                        if (!useRgb)
                         {
                             std::lock_guard<std::mutex> lock(_encoderMtx);
                             _curEncoderFrame = compositorFrame;
