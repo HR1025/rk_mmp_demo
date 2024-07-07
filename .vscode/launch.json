@@ -115,7 +115,11 @@
                 "-gop",
                 "25",
                 "-rcmode",
-                "avbr"
+                "avbr",
+                "-compositor_width",
+                "3840",
+                "-compositor_height",
+                "2160"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

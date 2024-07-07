@@ -11,6 +11,10 @@
 #include "GPU/GL/GLDrawContex.h"
 #include "GPU/Windows/AbstractWindows.h"
 #include "GPU/Windows/WindowFactory.h"
+#include "GPU/PG/AbstractSceneItem.h"
+#include "GPU/PG/AbstractSceneLayer.h"
+#include "GPU/PG/AbstractSceneCompositor.h"
+#include "GPU/PG/Utility/CommonUtility.h"
 #include "Codec/StreamFrame.h"
 #include "Codec/CodecConfig.h"
 #include "Codec/CodecFactory.h"
@@ -203,6 +207,8 @@ private:
     void HandleRateControlMode(const std::string& name, const std::string& value);
     void HandleBps(const std::string& name, const std::string& value);
     void HandleGop(const std::string& name, const std::string& value);
+    void HandleCompositorWidth(const std::string& name, const std::string& value);
+    void HandleCompositorHeight(const std::string& name, const std::string& value);
     void displayHelp();
 public:
     std::string              decoderClassName;
@@ -214,6 +220,8 @@ public:
     uint64_t                 bps;
     bool                     show;
     uint32_t                 fps;
+    uint32_t                 compositorWidth;
+    uint32_t                 compositorHeight;
 private: /* gpu */
     std::atomic<bool> _gpuInited;
     std::thread _renderThread;
@@ -234,7 +242,10 @@ public:
     std::condition_variable _displayCond;
     Codec::StreamFrame::ptr _curDisplayFrame;
     AbstractDisplay::ptr _display;
-public: /* TODO : compositor */
+public:
+    Gpu::AbstractSceneCompositor::ptr compositor;
+    Gpu::AbstractSceneLayer::ptr layer;
+    Gpu::AbstractSceneItem::ptr items[4];
 };
 
 App::App()
@@ -245,6 +256,8 @@ App::App()
     rcMode = Codec::RateControlMode::CBR;
     show = true;
     fps = 30;
+    compositorWidth = 1920;
+    compositorHeight = 1080;
 }
 
 void App::displayHelp()
@@ -294,6 +307,16 @@ void App::HandleBps(const std::string& name, const std::string& value)
 void App::HandleGop(const std::string& name, const std::string& value)
 {
     gop = std::stoi(value);
+}
+
+void App::HandleCompositorWidth(const std::string& name, const std::string& value)
+{
+    compositorWidth = std::stoi(value);
+}
+
+void App::HandleCompositorHeight(const std::string& name, const std::string& value)
+{
+    compositorHeight = std::stoi(value);
 }
 
 void App::HandleShow(const std::string& name, const std::string& value)
@@ -479,6 +502,18 @@ void App::defineOptions(OptionSet& options)
         .argument("[show]")
         .callback(OptionCallback<App>(this, &App::HandleShow))
     );
+    options.addOption(Option("compositor_width", "compositor_width", "合成宽度, default 1920")
+        .required(false)
+        .repeatable(false)
+        .argument("[width]")
+        .callback(OptionCallback<App>(this, &App::HandleCompositorWidth))
+    );
+    options.addOption(Option("compositor_height", "compositor_height", "合成高度, default 1080")
+        .required(false)
+        .repeatable(false)
+        .argument("[height]")
+        .callback(OptionCallback<App>(this, &App::HandleCompositorHeight))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -515,6 +550,8 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- rate control mode : " << rcMode;
         MMP_LOG_INFO << "-- gop is: " << gop;
         MMP_LOG_INFO << "-- show is: " << show;
+        MMP_LOG_INFO << "-- compositor width is: " << compositorWidth;
+        MMP_LOG_INFO << "-- compositor height is: " << compositorHeight;
     }
     std::atomic<bool> running(true);
     std::atomic<uint32_t> _decoderReachFileEndNum(0);
@@ -712,6 +749,56 @@ int App::main(const ArgVec& args)
     {
         std::thread* thread = new std::thread([this, &running]()
         {
+            // 
+            // Compositor
+            //            -> Layer
+            //                     -> Item0
+            //                     -> Item1
+            //                     -> Item2
+            //                     -> Item3
+            //
+            {
+                compositor = Gpu::AbstractSceneCompositor::Create();
+                layer = Gpu::AbstractSceneLayer::Create();
+                compositor->AddSceneLayer("Layer", layer);
+                for (uint32_t i=0; i<decoderNum; i++)
+                {
+                    items[i] = Gpu::AbstractSceneItem::Create();
+                    Gpu::SceneItemParam param = {};
+                    param.area = NormalizedRect(0.5f, 0.5f);
+                    switch (i)
+                    {
+                        case 0:
+                        {
+                            param.location = NormalizedPoint(0.0f, 0.0f);
+                            break;
+                        }
+                        case 1:
+                        {
+                            param.location = NormalizedPoint(0.0f, 0.5f);
+                            break;
+                        }
+                        case 2:
+                        {
+                            param.location = NormalizedPoint(0.5f, 0.0f);
+                            break;
+                        }
+                        case 3:
+                        {
+                            param.location = NormalizedPoint(0.5f, 0.5f);
+                            break;
+                        }
+                        default:
+                        {
+                            assert(false);
+                            break;
+                        }
+                    }
+                    items[i]->SetParam(param);
+                    layer->AddSceneItem(std::string() + "item" + "_" + std::to_string(i), items[i]);
+                }
+            }
+
             while (running || _encoder->CanPop())
             {
                 Poco::Stopwatch sw;
@@ -740,8 +827,15 @@ int App::main(const ArgVec& args)
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     }
                 }
-                // 合成 (暂未实现)
+                // 合成
                 {
+                    for (uint32_t i=0; i<decoderNum; i++)
+                    {
+                        Texture::ptr texture = Gpu::Create2DTextures(GLDrawContex::Instance(), decodersFrames[i]->info, "", GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV)[0];
+                        items[i]->UpdateImage(texture);
+                    }
+                    compositor->Draw();
+                    // TODO
                     compositorFrame = decodersFrames[0];
                 }
                 // 正向压制
