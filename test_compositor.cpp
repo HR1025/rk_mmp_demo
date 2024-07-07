@@ -213,15 +213,17 @@ public:
     Codec::RateControlMode   rcMode;
     uint64_t                 bps;
     bool                     show;
+    uint32_t                 fps;
 private: /* gpu */
     std::atomic<bool> _gpuInited;
     std::thread _renderThread;
     AbstractWindows::ptr _window;
     GLDrawContex::ptr    _draw;
-public:
-    std::mutex _decoderMtx;
-    std::map<uint32_t, Codec::AbstractDecoder::ptr> _decoders;
-    std::map<uint32_t, std::deque<Codec::AbstractEncoder::ptr>> _decodersStreamFrames;
+public: /* decoder */
+    std::mutex _decoderMtxs[4];
+    std::condition_variable _decoderConds[4];
+    Codec::StreamFrame::ptr _decoderStreamFrames[4];
+    Codec::AbstractDecoder::ptr _decoders[4];
 public:
     std::mutex _encoderMtx;
     std::condition_variable _encoderCond;
@@ -242,6 +244,7 @@ App::App()
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
     show = true;
+    fps = 30;
 }
 
 void App::displayHelp()
@@ -499,7 +502,7 @@ int App::main(const ArgVec& args)
     //
     // Hint : Compositor 涉及的多线程上下文比较复杂, context 统一放到 App number,
     //        跟 test_decoder、test_encoder、test_transcode 有所区别,
-    //        但是整体调用流程还是完整卸载 main 中, 便于理解查看
+    //        但是整体调用流程还是完整写在 main 中, 便于理解查看
     //
 
     {
@@ -513,7 +516,288 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- gop is: " << gop;
         MMP_LOG_INFO << "-- show is: " << show;
     }
+    std::atomic<bool> running(true);
+    std::atomic<uint32_t> _decoderReachFileEndNum(0);
+    constexpr uint32_t decoderNum = 4;
 
+    std::vector<std::thread*> _threads;
+
+    uint32_t curSlot = 0;
+
+    //
+    // 流水线结构
+    // Input File Read -> VDEC PUSH (*4)
+    //                    VDEC POP -> Send FRAME (*4)
+    //                                RECEIVE FRAME And COMPOSITOR ->  SEND FRAME
+    //                                                                 RECEIVE FRAME and DISPLAY
+    //                                                                 RECEIVE FRAME -> VENC PUSH
+    //                                                                                  VENC POP -> Output File Write
+    //
+    // 流水线最大长度为 5, 整体使用线程数量 12(4 + 4 + 1 + 1 + 1 + 1)条；
+    // 流控由 COMPOSITOR 控制,按照固定 fps 合成, 其他环节由 mtx 和 cond 形成正向或反向压制
+    // (实际上如果场景更为复杂, 最好是由统一线程池管理调度, 不过单独起线程便于理解逻辑行为)
+    // 
+
+    /*********************************** 解码线程(Begin) ******************************/
+    for (uint32_t i=0; i<decoderNum; i++)
+    {
+        _decoders[i] =  Codec::DecoderFactory::DefaultFactory().CreateDecoder(decoderClassName);
+    }
+    // Decoder Push
+    for (uint32_t i=0; i<decoderNum; i++)
+    {
+        std::thread* thread = new std::thread([this, &_decoderReachFileEndNum, slot = i]()
+        {
+            std::shared_ptr<RkCacheFileByteReader> byteReader = std::make_shared<RkCacheFileByteReader>(inputFile);
+            Codec::AbstractDecoder::ptr decoder = _decoders[slot];
+            decoder->Init();
+            decoder->Start();
+            NormalPack::ptr pack = nullptr;
+            do
+            {
+                pack = byteReader->GetNalUint();
+                if (pack)
+                {
+                    decoder->Push(pack);
+                }
+            } while (pack);
+            _decoderReachFileEndNum++;
+            decoder->Stop();
+            decoder->Uninit();
+        });
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    // Decoder Pop
+    for (uint32_t i=0; i<decoderNum; i++)
+    {
+        std::thread* thread = new std::thread([this, &running, slot = i]()
+        {
+            Codec::AbstractDecoder::ptr decoder = _decoders[slot];
+            std::mutex& decoderMtx = _decoderMtxs[slot];
+            std::condition_variable& decoderCond = _decoderConds[slot];
+            Codec::StreamFrame::ptr& curframe = _decoderStreamFrames[slot]; 
+            while (running)
+            {
+                AbstractFrame::ptr frame;
+                if (decoder->Pop(frame))
+                {
+                    std::unique_lock<std::mutex> lock(decoderMtx);
+                    if (curframe)
+                    {
+                        //
+                        // Hint : 存在两种唤醒条件
+                        //        1 - 数据被消费, 需要再生产数据
+                        //        2 - 线程退出
+                        //
+                        decoderCond.wait(lock);
+                        if (!running)
+                        {
+                            break;
+                        }
+                    }
+                    curframe = std::dynamic_pointer_cast<Codec::StreamFrame>(frame);
+                }
+                else
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
+                }
+            }
+        });
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    /*********************************** 解码线程(End) ******************************/
+    /***************************************** 渲染线程(Begin) ****************************************/
+    {
+        std::thread* thread = new std::thread([this, &running]()
+        {
+            _display = AbstractDisplay::Create();
+            if (_display)
+            {
+                _display->Init();
+                bool isFirst = true;
+                while (running)
+                {
+                    Codec::StreamFrame::ptr frame;
+                    {
+                        std::unique_lock<std::mutex> lock(_displayMtx);
+                        if (!_curDisplayFrame)
+                        {
+                            _displayCond.wait(lock);
+                        }
+                        frame = _curDisplayFrame;
+                        _curDisplayFrame = nullptr;
+                    }
+                    if (isFirst)
+                    {
+                        _display->Open(frame->info);
+                        isFirst = false;
+                    }
+                    if (frame)
+                    {
+                        _display->UpdateWindow((const uint32_t*)frame->GetData(0));
+                    }
+                }
+                _display->Close();
+                _display->UnInit();
+            }
+        });
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    /***************************************** 渲染线程(End) ****************************************/
+    /***************************************** 编码线程(Begin) ****************************************/
+    _encoder = Codec::EncoderFactory::DefaultFactory().CreateEncoder(encoderClassName);
+    // Enoder Push
+    {
+        std::thread* thread = new std::thread([this, &running]()
+        {
+            {
+                _encoder->SetParameter(rcMode, Codec::kRateControlMode);
+                _encoder->SetParameter(gop, Codec::kGop);
+                _encoder->SetParameter(bps, Codec::kBps);
+            }
+            _encoder->Init();
+            _encoder->Start();
+            while (running)
+            {
+                Codec::StreamFrame::ptr frame;
+                {
+                    std::unique_lock<std::mutex> lock(_encoderMtx);
+                    if (!_curEncoderFrame)
+                    {
+                        _encoderCond.wait(lock);
+                    }
+                    frame = _curEncoderFrame;
+                    _curEncoderFrame = nullptr;
+                }
+                if (frame)
+                {
+                    _encoder->Push(frame);
+                }
+            }
+            _encoder->Stop();
+            _encoder->Uninit();
+        });
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    // Encoder Pop
+    {
+        std::thread* thread = new std::thread([this, &running]()
+        {
+            std::ofstream ofs(outputFile);
+            while (running || _encoder->CanPop())
+            {
+                AbstractPack::ptr pack;
+                if (_encoder->Pop(pack))
+                {
+                    ofs.write((char*)pack->GetData(0), pack->GetSize());
+                    // MMP_LOG_INFO << "Pop, addresss is: " << pack->GetData(0) << ", size is: " << pack->GetSize();
+                }
+                else
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(1));
+                }
+            }
+            ofs.flush();
+            ofs.close();
+        });
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    /***************************************** 编码线程(End) ****************************************/
+    /***************************************** 合成线程(End) ****************************************/
+    {
+        std::thread* thread = new std::thread([this, &running]()
+        {
+            while (running || _encoder->CanPop())
+            {
+                Poco::Stopwatch sw;
+                sw.start();
+                Codec::StreamFrame::ptr decodersFrames[4];
+                Codec::StreamFrame::ptr compositorFrame;
+                // 反向压制
+                {
+                    uint32_t curFrame = 0;
+                    while (running && curFrame != decoderNum)
+                    {
+                        for (uint32_t i=0; i<decoderNum; i++)
+                        {
+                            if (!decodersFrames[i])
+                            {
+                                std::lock_guard<std::mutex> lock(_decoderMtxs[i]);
+                                if (_decoderStreamFrames[i])
+                                {
+                                    decodersFrames[i] = _decoderStreamFrames[i];
+                                    _decoderStreamFrames[i] = nullptr;
+                                    _decoderConds[i].notify_one();
+                                    curFrame++;
+                                }
+                            }
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    }
+                }
+                // 合成 (暂未实现)
+                {
+                    compositorFrame = decodersFrames[0];
+                }
+                // 正向压制
+                {
+                    if (compositorFrame)
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(_displayMtx);
+                            _curDisplayFrame = compositorFrame;
+                            _displayCond.notify_one();
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(_encoderMtx);
+                            _curEncoderFrame = compositorFrame;
+                            _encoderCond.notify_one();
+                        }  
+                    }
+                }
+                // 简易流控
+                {
+                    uint32_t sleepTime = 1000000 / fps;
+                    if (sw.elapsed() > sleepTime)
+                    {
+                        MMP_LOG_WARN << "Compositor process too low";
+                    }
+                    else
+                    {
+                        sleepTime -= sw.elapsed();
+                        std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
+                    }
+                }
+            }
+        });
+        _displayCond.notify_one();
+        _encoderCond.notify_one();
+        for (uint32_t i=0; i<decoderNum; i++)
+        {
+            _decoderConds[i].notify_all();
+        }
+        thread->detach();
+        _threads.push_back(thread);
+    }
+    /***************************************** 合成线程(End) ****************************************/
+
+
+    while (_decoderReachFileEndNum != decoderNum)
+    {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    running = true;
+
+    for (auto& thread : _threads)
+    {
+        thread->join();
+        delete thread;
+    }
 
     return 0;
 }
