@@ -241,7 +241,7 @@ public:
 public:
     std::mutex _displayMtx;
     std::condition_variable _displayCond;
-    Codec::StreamFrame::ptr _curDisplayFrame;
+    AbstractFrame::ptr _curDisplayFrame;
     AbstractDisplay::ptr _display;
 public:
     Gpu::AbstractSceneCompositor::ptr compositor;
@@ -590,7 +590,7 @@ int App::main(const ArgVec& args)
     // Decoder Push
     for (uint32_t i=0; i<decoderNum; i++)
     {
-        std::thread* thread = new std::thread([this, &_decoderReachFileEndNum, slot = i]()
+        std::thread* thread = new std::thread([this, &running, &_decoderReachFileEndNum, slot = i]()
         {
             std::shared_ptr<RkCacheFileByteReader> byteReader = std::make_shared<RkCacheFileByteReader>(inputFile);
             Codec::AbstractDecoder::ptr decoder = _decoders[slot];
@@ -604,7 +604,7 @@ int App::main(const ArgVec& args)
                 {
                     decoder->Push(pack);
                 }
-            } while (pack);
+            } while (pack && running);
             _decoderReachFileEndNum++;
             decoder->Stop();
             decoder->Uninit();
@@ -663,7 +663,7 @@ int App::main(const ArgVec& args)
                 bool isFirst = true;
                 while (running)
                 {
-                    Codec::StreamFrame::ptr frame;
+                    AbstractFrame::ptr frame;
                     {
                         std::unique_lock<std::mutex> lock(_displayMtx);
                         if (!_curDisplayFrame)
@@ -675,7 +675,16 @@ int App::main(const ArgVec& args)
                     }
                     if (isFirst)
                     {
-                        _display->Open(frame->info);
+                        Codec::StreamFrame::ptr streamFrame = std::dynamic_pointer_cast<Codec::StreamFrame>(frame);
+                        AbstractPicture::ptr pictureFrame = std::dynamic_pointer_cast<AbstractPicture>(frame);
+                        if (streamFrame)
+                        {
+                            _display->Open(streamFrame->info);
+                        }
+                        else if (pictureFrame)
+                        {
+                            _display->Open(pictureFrame->info);
+                        }
                         isFirst = false;
                     }
                     if (frame)
@@ -764,7 +773,19 @@ int App::main(const ArgVec& args)
             //                     -> Item2
             //                     -> Item3
             //
-            bool useRgb = true; // for early debug
+            
+            //
+            // Hint : for early debug
+            //        useRgb 为 true 时, 只有 item 才会使用 YUV + OES, 而 Layer 和 Compositor 仍使用正常的 Texture
+            //
+            bool useRgb = true; 
+            uint32_t yuvImportFlag = GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
+            
+            AbstractPicture::ptr frameBuffer;
+            if (useRgb)
+            {
+                frameBuffer = std::make_shared<NormalPicture>(PixelsInfo({(int32_t)compositorWidth, (int32_t)compositorHeight, 8, PixelFormat::RGBA8888}));
+            }
             {
                 compositor = Gpu::AbstractSceneCompositor::Create();
                 {
@@ -773,13 +794,10 @@ int App::main(const ArgVec& args)
                         param.width = compositorWidth;
                         param.height = compositorHeight;
                         param.bufSize = 3;
-                        if (useRgb)
+                        param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER;
+                        if (!useRgb)
                         {
-                            param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL;
-                        }
-                        else
-                        {
-                            param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
+                            param.flags |= yuvImportFlag;
                         }
                         compositor->SetParam(param);
                     }
@@ -791,29 +809,6 @@ int App::main(const ArgVec& args)
                         param.height = compositorWidth;
                         param.width = compositorHeight;
                         layer->SetParam(param);
-                    }
-                    {
-                        PixelsInfo info;
-                        info.width = compositorWidth;
-                        info.height = compositorHeight;
-                        if (useRgb)
-                        {
-                            info.format = PixelFormat::RGB888;
-                        }
-                        else
-                        {
-                            info.format = PixelFormat::NV12;
-                        }
-                        if (useRgb)
-                        {
-                            Texture::ptr texture = Gpu::Create2DTextures(_draw, info, "", GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL)[0];
-                            layer->UpdateCanvas(texture);
-                        }
-                        else
-                        {
-                            Texture::ptr texture = Gpu::Create2DTextures(_draw, info, "", GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV)[0];
-                            layer->UpdateCanvas(texture);
-                        }
                     }
                     compositor->AddSceneLayer("Layer", layer);
                 }
@@ -898,20 +893,20 @@ int App::main(const ArgVec& args)
                     }
                     compositor->Draw();
                     {
-                        DmaHeapAllocateMethod::ptr alloc = std::dynamic_pointer_cast<DmaHeapAllocateMethod>(compositor->GetFrameBuffer()->GetAllocateMethod());
-                        PixelsInfo info;
-                        info.width = compositorWidth;
-                        info.height = compositorHeight;
-                        if (useRgb)
+                        if (!useRgb)
                         {
-                            info.format = PixelFormat::RGBA8888;
+                            DmaHeapAllocateMethod::ptr alloc = std::dynamic_pointer_cast<DmaHeapAllocateMethod>(compositor->GetFrameBuffer()->GetAllocateMethod());
+                            PixelsInfo info;
+                            info.width = compositorWidth;
+                            info.height = compositorHeight;
+                            info.format = PixelFormat::NV12;
+                            Codec::StreamFrame::ptr frame = std::make_shared<Codec::StreamFrame>(info, alloc);
+                            compositorFrame = frame;
                         }
                         else
                         {
-                            info.format = PixelFormat::NV12;
+                            Gpu::Copy2DTexturesToMemory(GLDrawContex::Instance(), std::vector<Texture::ptr>({compositor->GetFrameBuffer()}), frameBuffer);
                         }
-                        Codec::StreamFrame::ptr frame = std::make_shared<Codec::StreamFrame>(info, alloc);
-                        compositorFrame = frame;
                     }
                     // MMP_LOG_INFO << "Compositor End";
                 }
@@ -924,12 +919,19 @@ int App::main(const ArgVec& args)
                             _curDisplayFrame = compositorFrame;
                             _displayCond.notify_one();
                         }
-                        if (!useRgb)
                         {
                             std::lock_guard<std::mutex> lock(_encoderMtx);
                             _curEncoderFrame = compositorFrame;
                             _encoderCond.notify_one();
                         }  
+                    }
+                    else if (frameBuffer)
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(_displayMtx);
+                            _curDisplayFrame = frameBuffer;
+                            _displayCond.notify_one();
+                        }
                     }
                 }
                 // 简易流控
@@ -946,13 +948,19 @@ int App::main(const ArgVec& args)
                     }
                 }
             }
+            _displayCond.notify_one();
+            _encoderCond.notify_one();
+            for (uint32_t i=0; i<decoderNum; i++)
+            {
+                _decoderConds[i].notify_all();
+            }
+            for (uint32_t i=0; i<decoderNum; i++)
+            {
+                items[i].reset();
+            }
+            layer.reset();
+            compositor.reset();
         });
-        _displayCond.notify_one();
-        _encoderCond.notify_one();
-        for (uint32_t i=0; i<decoderNum; i++)
-        {
-            _decoderConds[i].notify_all();
-        }
         thread->detach();
         _threads.push_back(thread);
     }
