@@ -199,12 +199,14 @@ public:
     std::string              inputFile;
     bool                     show;
     uint64_t                 fps;
+    size_t                   loopTime;
 };
 
 App::App()
 {
     show = true;
     fps = 30;
+    loopTime = 0;
 }
 
 void App::displayHelp()
@@ -420,15 +422,18 @@ int App::main(const ArgVec& args)
     ThreadPool::ThreadPoolSingleton()->Commit(displayTask);
     /***************************************** 渲染线程(End) ****************************************/
     /*********************************** 解码线程(Begin) ******************************/
+    size_t currentLoopTime = 0;
+    // loopTime = 120; // for quick exit debug
     do
     {
         pack = byteReader->GetNalUint();
         if (pack)
         {
+            currentLoopTime++;
             MMP_LOG_INFO << "AbstractDisplay Push";
             decoder->Push(pack);
         }
-    } while (pack);
+    } while (pack && (loopTime == 0 || currentLoopTime < loopTime));
     /*********************************** 解码线程(End) ******************************/
 
     if (display)
