@@ -681,10 +681,6 @@ int App::main(const ArgVec& args)
                         {
                             _display->Open(streamFrame->info);
                         }
-                        else if (pictureFrame)
-                        {
-                            _display->Open(pictureFrame->info);
-                        }
                         isFirst = false;
                     }
                     if (frame)
@@ -774,18 +770,7 @@ int App::main(const ArgVec& args)
             //                     -> Item3
             //
             
-            //
-            // Hint : for early debug
-            //        useRgb 为 true 时, 只有 item 才会使用 YUV + OES, 而 Layer 和 Compositor 仍使用正常的 Texture
-            //
-            bool useRgb = true; 
-            uint32_t yuvImportFlag = GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
-            
             AbstractPicture::ptr frameBuffer;
-            if (useRgb)
-            {
-                frameBuffer = std::make_shared<NormalPicture>(PixelsInfo({(int32_t)compositorWidth, (int32_t)compositorHeight, 8, PixelFormat::RGBA8888}));
-            }
             {
                 compositor = Gpu::AbstractSceneCompositor::Create();
                 {
@@ -794,11 +779,7 @@ int App::main(const ArgVec& args)
                         param.width = compositorWidth;
                         param.height = compositorHeight;
                         param.bufSize = 3;
-                        param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER;
-                        if (!useRgb)
-                        {
-                            param.flags |= yuvImportFlag;
-                        }
+                        param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
                         compositor->SetParam(param);
                     }
                 }
@@ -893,20 +874,14 @@ int App::main(const ArgVec& args)
                     }
                     compositor->Draw();
                     {
-                        if (!useRgb)
-                        {
-                            DmaHeapAllocateMethod::ptr alloc = std::dynamic_pointer_cast<DmaHeapAllocateMethod>(compositor->GetFrameBuffer()->GetAllocateMethod());
-                            PixelsInfo info;
-                            info.width = compositorWidth;
-                            info.height = compositorHeight;
-                            info.format = PixelFormat::NV12;
-                            Codec::StreamFrame::ptr frame = std::make_shared<Codec::StreamFrame>(info, alloc);
-                            compositorFrame = frame;
-                        }
-                        else
-                        {
-                            Gpu::Copy2DTexturesToMemory(GLDrawContex::Instance(), std::vector<Texture::ptr>({compositor->GetFrameBuffer()}), frameBuffer);
-                        }
+
+                        DmaHeapAllocateMethod::ptr alloc = std::dynamic_pointer_cast<DmaHeapAllocateMethod>(compositor->GetFrameBuffer()->GetAllocateMethod());
+                        PixelsInfo info;
+                        info.width = compositorWidth;
+                        info.height = compositorHeight;
+                        info.format = PixelFormat::NV12;
+                        Codec::StreamFrame::ptr frame = std::make_shared<Codec::StreamFrame>(info, alloc);
+                        compositorFrame = frame;
                     }
                     // MMP_LOG_INFO << "Compositor End";
                 }
@@ -924,14 +899,6 @@ int App::main(const ArgVec& args)
                             _curEncoderFrame = compositorFrame;
                             _encoderCond.notify_one();
                         }  
-                    }
-                    else if (frameBuffer)
-                    {
-                        {
-                            std::lock_guard<std::mutex> lock(_displayMtx);
-                            _curDisplayFrame = frameBuffer;
-                            _displayCond.notify_one();
-                        }
                     }
                 }
                 // 简易流控
