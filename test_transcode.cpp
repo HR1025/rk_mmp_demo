@@ -197,6 +197,7 @@ private:
     void HandleRateControlMode(const std::string& name, const std::string& value);
     void HandleBps(const std::string& name, const std::string& value);
     void HandleGop(const std::string& name, const std::string& value);
+    void HandleUseAFBC(const std::string& name, const std::string& value);
     void displayHelp();
 public:
     std::string              decoderClassName;
@@ -206,10 +207,12 @@ public:
     uint32_t                 gop;
     Codec::RateControlMode   rcMode;
     uint64_t                 bps;
+    bool                     useAFBC;
 };
 
 App::App()
 {
+    useAFBC = false;
     bps = 4 * 1024 * 1024;
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
@@ -306,6 +309,14 @@ void App::HandleDstCodecType(const std::string& name, const std::string& value)
     }
 }
 
+void App::HandleUseAFBC(const std::string& name, const std::string& value)
+{
+    if (value == "true")
+    {
+        useAFBC = true;
+    }
+}
+
 void App::HandleInput(const std::string& name, const std::string& value)
 {
     inputFile = value;
@@ -388,6 +399,12 @@ void App::defineOptions(OptionSet& options)
         .argument("[rcmode]")
         .callback(OptionCallback<App>(this, &App::HandleRateControlMode))
     );
+    options.addOption(Option("use_AFBC", "afbc", "是否启用 AFBC, 可选 default false")
+        .required(false)
+        .repeatable(false)
+        .argument("[flag]")
+        .callback(OptionCallback<App>(this, &App::HandleUseAFBC))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -417,6 +434,7 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- bit per second is: " << bps;
         MMP_LOG_INFO << "-- rate control mode : " << rcMode;
         MMP_LOG_INFO << "-- gop is: " << gop;
+        MMP_LOG_INFO << "-- use AFBC is: " << (useAFBC ? "true" : "false");
     }
     std::atomic<bool> sync(false);
     std::atomic<bool> running(true); 
@@ -427,6 +445,10 @@ int App::main(const ArgVec& args)
     {
         MMP_LOG_INFO << "Rebuild with -DUSE_ROCKCHIP=ON, see README for detail.";
         return 0;
+    }
+    if (useAFBC)
+    {
+        decoder->SetParameter(true, Codec::kEnableDecoderAFBC);
     }
     decoder->Init();
     decoder->Start();
