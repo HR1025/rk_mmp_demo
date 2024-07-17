@@ -51,6 +51,14 @@ make -j8
 其中 `./aarch64-linux-gnu/libmali-valhall-g610-g6p0-x11-gbm.so` 就是 GPU 驱动了, 不然可能用的是由 `MESA` 提供的 `GPU` 软实现; (`MALI` 是 `ARM` GPU 的一种架构实现, 有兴趣可以百度一下)
 然后修改 `CMakeLists.txt` 的内容, 具体见 `CMakeLists.txt`.
 
+> 目前来说 `Mesa` 提供的 `Panfrost` 驱动暂不可用, 原因未知, 排查 ing 中
+
+## 特性
+
+- 编解码使用纯外部模式,手动接管 `DMA-BUF` 生命周期,便于与 `GPU` 协同
+- 支持 `EGL_EXT_yuv_surface` 和 `EGL_EXT_image_dma_buf_import`, 高效跨设备节点传输 YUV 数据
+- 支持 `AFBC` ARM 帧缓冲压缩
+- 支持 `EGL_KHR_wait_sync`, 减少 `glFinish` 调用, 提升 `EGL context` 处理效率
 
 ## 示例
 
