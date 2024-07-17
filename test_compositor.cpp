@@ -207,6 +207,7 @@ private:
     void HandleFps(const std::string& name, const std::string& value);
     void HandleRateControlMode(const std::string& name, const std::string& value);
     void HandleBps(const std::string& name, const std::string& value);
+    void HandleFlushMode(const std::string& name, const std::string& value);
     void HandleGop(const std::string& name, const std::string& value);
     void HandleCompositorWidth(const std::string& name, const std::string& value);
     void HandleCompositorHeight(const std::string& name, const std::string& value);
@@ -225,6 +226,7 @@ public:
     uint32_t                 compositorWidth;
     uint32_t                 compositorHeight;
     bool                     useAFBC;
+    uint32_t                 flushMode; // 0 -> clear every frame, 1 -> keep
 private: /* gpu */
     std::atomic<bool> _gpuInited;
     std::thread _renderThread;
@@ -258,10 +260,11 @@ App::App()
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
     show = true;
-    fps = 30;
+    fps = 60;
     compositorWidth = 1920;
     compositorHeight = 1080;
     useAFBC = true;
+    flushMode = 0;
 }
 
 void App::displayHelp()
@@ -308,6 +311,11 @@ void App::HandleBps(const std::string& name, const std::string& value)
     bps = std::stoi(value);
 }
 
+void App::HandleFlushMode(const std::string& name, const std::string& value)
+{
+    flushMode = std::stoi(value);
+}
+
 void App::HandleGop(const std::string& name, const std::string& value)
 {
     gop = std::stoi(value);
@@ -323,6 +331,10 @@ void App::HandleUseAFBC(const std::string& name, const std::string& value)
     if (value == "true")
     {
         useAFBC = true;
+    }
+    else if (value == "false")
+    {
+        useAFBC = false;
     }
 }
 
@@ -532,6 +544,12 @@ void App::defineOptions(OptionSet& options)
         .argument("[flag]")
         .callback(OptionCallback<App>(this, &App::HandleUseAFBC))
     );
+    options.addOption(Option("compositor_render_mode", "compositor_render_mode,", "刷新方式,可选: 0 -> flush every frame, 1 -> keep; default 0")
+        .required(false)
+        .repeatable(false)
+        .callback(OptionCallback<App>(this, &App::HandleFlushMode))
+        .argument("[num]")
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -574,6 +592,7 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- compositor width is: " << compositorWidth;
         MMP_LOG_INFO << "-- compositor height is: " << compositorHeight;
         MMP_LOG_INFO << "-- use AFBC is: " << (useAFBC ? "true" : "false");
+        MMP_LOG_INFO << "-- flush mode is: " << (flushMode == 1 ? "keep" : "clear");
     }
     std::atomic<bool> running(true);
     std::atomic<uint32_t> _decoderReachFileEndNum(0);
@@ -810,6 +829,10 @@ int App::main(const ArgVec& args)
                         {
                             param.flags |= GlTextureFlags::TEXTURE_AFBC;
                         }
+                        if (flushMode == 1)
+                        {
+                            param.strategy = Gpu::SceneRenderStrategy::Keep;
+                        }
                         compositor->SetParam(param);
                     }
                 }
@@ -819,6 +842,10 @@ int App::main(const ArgVec& args)
                         Gpu::SceneLayerParam param;
                         param.height = compositorWidth;
                         param.width = compositorHeight;
+                        if (flushMode == 1)
+                        {
+                            param.strategy = Gpu::SceneRenderStrategy::Keep;
+                        }
                         layer->SetParam(param);
                     }
                     compositor->AddSceneLayer("Layer", layer);

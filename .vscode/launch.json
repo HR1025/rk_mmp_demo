@@ -22,12 +22,7 @@
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
-            "environment": [
-                {
-                    "name": "mpp_buffer_debug",
-                    "value": "15"
-                }
-            ],
+            "environment": [],
             "externalConsole": false,
             "MIMode": "gdb",
             "setupCommands": [
@@ -83,7 +78,9 @@
                 "-gop",
                 "25",
                 "-rcmode",
-                "avbr"
+                "avbr",
+                "-afbc",
+                "true"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
@@ -104,6 +101,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/build/test_compositor",
             "args": [
+                "--compositor_render_mode=0",
                 "-src_codec",
                 "h264",
                 "-dst_codec",
@@ -119,7 +117,9 @@
                 "-compositor_width",
                 "3840",
                 "-compositor_height",
-                "2160"
+                "2160",
+                "-afbc",
+                "true"
             ],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
