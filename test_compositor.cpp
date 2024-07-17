@@ -210,6 +210,7 @@ private:
     void HandleGop(const std::string& name, const std::string& value);
     void HandleCompositorWidth(const std::string& name, const std::string& value);
     void HandleCompositorHeight(const std::string& name, const std::string& value);
+    void HandleUseAFBC(const std::string& name, const std::string& value);
     void displayHelp();
 public:
     std::string              decoderClassName;
@@ -223,6 +224,7 @@ public:
     uint32_t                 fps;
     uint32_t                 compositorWidth;
     uint32_t                 compositorHeight;
+    bool                     useAFBC;
 private: /* gpu */
     std::atomic<bool> _gpuInited;
     std::thread _renderThread;
@@ -252,13 +254,14 @@ public:
 App::App()
 {
     _gpuInited = false;
-    bps = 4 * 1024 * 1024;
+    bps = 10 * 1024 * 1024;
     gop = 60;
     rcMode = Codec::RateControlMode::CBR;
     show = true;
     fps = 30;
     compositorWidth = 1920;
     compositorHeight = 1080;
+    useAFBC = true;
 }
 
 void App::displayHelp()
@@ -313,6 +316,14 @@ void App::HandleGop(const std::string& name, const std::string& value)
 void App::HandleCompositorWidth(const std::string& name, const std::string& value)
 {
     compositorWidth = std::stoi(value);
+}
+
+void App::HandleUseAFBC(const std::string& name, const std::string& value)
+{
+    if (value == "true")
+    {
+        useAFBC = true;
+    }
 }
 
 void App::HandleCompositorHeight(const std::string& name, const std::string& value)
@@ -515,6 +526,12 @@ void App::defineOptions(OptionSet& options)
         .argument("[height]")
         .callback(OptionCallback<App>(this, &App::HandleCompositorHeight))
     );
+    options.addOption(Option("use_AFBC", "afbc", "是否启用 AFBC, 可选 default true")
+        .required(false)
+        .repeatable(false)
+        .argument("[flag]")
+        .callback(OptionCallback<App>(this, &App::HandleUseAFBC))
+    );
 }
 
 void App::defineProperty(const std::string& def)
@@ -540,7 +557,10 @@ int App::main(const ArgVec& args)
     //        跟 test_decoder、test_encoder、test_transcode 有所区别,
     //        但是整体调用流程还是完整写在 main 中, 便于理解查看
     //
-
+    if (useAFBC)
+    {
+        show = false;
+    }
     {
         MMP_LOG_INFO << "Compositor config";
         MMP_LOG_INFO << "-- encoder name : " << encoderClassName;
@@ -553,6 +573,7 @@ int App::main(const ArgVec& args)
         MMP_LOG_INFO << "-- show is: " << show;
         MMP_LOG_INFO << "-- compositor width is: " << compositorWidth;
         MMP_LOG_INFO << "-- compositor height is: " << compositorHeight;
+        MMP_LOG_INFO << "-- use AFBC is: " << (useAFBC ? "true" : "false");
     }
     std::atomic<bool> running(true);
     std::atomic<uint32_t> _decoderReachFileEndNum(0);
@@ -586,6 +607,10 @@ int App::main(const ArgVec& args)
     for (uint32_t i=0; i<decoderNum; i++)
     {
         _decoders[i] =  Codec::DecoderFactory::DefaultFactory().CreateDecoder(decoderClassName);
+        if (useAFBC)
+        {
+            _decoders[i]->SetParameter(true, Codec::kEnableDecoderAFBC);
+        }
     }
     // Decoder Push
     for (uint32_t i=0; i<decoderNum; i++)
@@ -653,6 +678,7 @@ int App::main(const ArgVec& args)
     }
     /*********************************** 解码线程(End) ******************************/
     /***************************************** 渲染线程(Begin) ****************************************/
+    if (show)
     {
         std::thread* thread = new std::thread([this, &running]()
         {
@@ -780,6 +806,10 @@ int App::main(const ArgVec& args)
                         param.height = compositorHeight;
                         param.bufSize = 3;
                         param.flags = GlTextureFlags::TEXTURE_USE_FOR_RENDER | GlTextureFlags::TEXTURE_EXTERNAL | GlTextureFlags::TEXTURE_YUV;
+                        if (useAFBC)
+                        {
+                            param.flags |= GlTextureFlags::TEXTURE_AFBC;
+                        }
                         compositor->SetParam(param);
                     }
                 }

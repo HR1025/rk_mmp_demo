@@ -12,7 +12,7 @@
 ```shell
 mkdir build
 cd  build
-cmake .. -DUSE_ROCKCHIP=ON cmake .. -DUSE_ROCKCHIP=ON -DUSE_EGL=ON -DUSE_OPENGL=ON -DNOT_AUTO_EGL=ON
+cmake .. -DUSE_ROCKCHIP=ON cmake .. -DUSE_ROCKCHIP=ON -DUSE_EGL=ON -DUSE_OPENGL=ON -DNOT_AUTO_EGL=ON -DCMAKE_BUILD_TYPE=Debug
 make -j8
 ```
 
