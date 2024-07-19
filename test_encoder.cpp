@@ -86,7 +86,7 @@ void App::HandleCodecType(const std::string& name, const std::string& value)
     static std::map<std::string, std::string> kLookup = 
     {
         {"h264", "RKH264Encoder"},
-        {"hevc", ""}, // todo
+        {"hevc", "RKH265Encoder"},
         {"vp8", ""}, // todo
         {"vp9", ""}, // todo
         {"av1", ""} // av1
